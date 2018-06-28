@@ -65,6 +65,7 @@
 #include "lib/clock.h"
 #include "lib/vxlan.h"
 #include "lib/devcom.h"
+#include "lib/pci_vsc.h"
 #include "diag/fw_tracer.h"
 #include "ecpf.h"
 
@@ -1312,6 +1313,8 @@ static int init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	request_module_nowait(MLX5_IB_MOD);
+
+	mlx5_vsc_init(dev);
 
 	err = mlx5_devlink_register(devlink, &pdev->dev);
 	if (err)
