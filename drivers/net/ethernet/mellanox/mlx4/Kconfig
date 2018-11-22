@@ -28,6 +28,7 @@ config MLX4_CORE
 	tristate
 	depends on PCI
 	select NET_DEVLINK
+	select DIMLIB
 	default n
 
 config MLX4_DEBUG

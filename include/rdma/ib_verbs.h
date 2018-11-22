@@ -65,6 +65,7 @@
 #include <rdma/restrack.h>
 #include <uapi/rdma/rdma_user_ioctl.h>
 #include <uapi/rdma/ib_user_ioctl_verbs.h>
+#include <linux/dim.h>
 
 #define IB_FW_VERSION_NAME_MAX	ETHTOOL_FWVERS_LEN
 
@@ -1638,6 +1639,8 @@ struct ib_cq {
 	 * Implementation details of the RDMA core, don't use in drivers:
 	 */
 	struct rdma_restrack_entry res;
+	struct dim		dim;
+	bool			dim_used;
 };
 
 struct ib_srq {
@@ -3746,7 +3749,8 @@ static inline int ib_post_recv(struct ib_qp *qp,
 struct ib_cq *__ib_alloc_cq_user(struct ib_device *dev, void *private,
 				 int nr_cqe, int comp_vector,
 				 enum ib_poll_context poll_ctx,
-				 const char *caller, struct ib_udata *udata);
+				 const char *caller, struct ib_udata *udata,
+				 bool use_dim);
 
 /**
  * ib_alloc_cq_user: Allocate kernel/user CQ
@@ -3764,7 +3768,7 @@ static inline struct ib_cq *ib_alloc_cq_user(struct ib_device *dev,
 					     struct ib_udata *udata)
 {
 	return __ib_alloc_cq_user(dev, private, nr_cqe, comp_vector, poll_ctx,
-				  KBUILD_MODNAME, udata);
+				  KBUILD_MODNAME, udata, false);
 }
 
 /**
@@ -3783,6 +3787,25 @@ static inline struct ib_cq *ib_alloc_cq(struct ib_device *dev, void *private,
 {
 	return ib_alloc_cq_user(dev, private, nr_cqe, comp_vector, poll_ctx,
 				NULL);
+}
+
+/**
+ * ib_alloc_cq_dim: Allocate kernel CQ with dynamic interrupt moderation
+ * @dev: The IB device
+ * @private: Private data attached to the CQE
+ * @nr_cqe: Number of CQEs in the CQ
+ * @comp_vector: Completion vector used for the IRQs
+ * @poll_ctx: Context used for polling the CQ
+ *
+ * NOTE: for user cq use ib_alloc_cq_user with valid udata!
+ */
+static inline struct ib_cq *ib_alloc_cq_dim(struct ib_device *dev,
+					    void *private, int nr_cqe,
+					    int comp_vector,
+					    enum ib_poll_context poll_ctx)
+{
+	return __ib_alloc_cq_user(dev, private, nr_cqe, comp_vector, poll_ctx,
+				  KBUILD_MODNAME, NULL, true);
 }
 
 /**

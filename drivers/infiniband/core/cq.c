@@ -14,6 +14,7 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <rdma/ib_verbs.h>
+#include <linux/rdma_dim.h>
 
 /* # of WCs to poll for with a single call to ib_poll_cq */
 #define IB_POLL_BATCH			16
@@ -25,6 +26,32 @@
 
 #define IB_POLL_FLAGS \
 	(IB_CQ_NEXT_COMP | IB_CQ_REPORT_MISSED_EVENTS)
+
+static void ib_cq_rdma_dim_work(struct work_struct *w)
+{
+	struct dim *dim = container_of(w, struct dim, work);
+	struct ib_cq *cq = container_of(dim, struct ib_cq, dim);
+
+	u16 usec = rdma_dim_prof[dim->profile_ix].usec;
+	u16 comps = rdma_dim_prof[dim->profile_ix].comps;
+
+	dim->state = DIM_START_MEASURE;
+
+	cq->device->ops.modify_cq(cq, comps, usec);
+}
+
+static bool rdma_dim_init(struct dim *dim, struct ib_cq *cq)
+{
+	if (!cq->device->ops.modify_cq)
+		return false;
+
+	memset(dim, 0, sizeof(*dim));
+	dim->state = DIM_START_MEASURE;
+	dim->tune_state = DIM_GOING_RIGHT;
+	dim->profile_ix = RDMA_DIM_START_PROFILE;
+
+	return true;
+}
 
 static int __ib_process_cq(struct ib_cq *cq, int budget, struct ib_wc *wcs,
 			   int batch)
@@ -98,6 +125,24 @@ static int ib_poll_handler(struct irq_poll *iop, int budget)
 	return completed;
 }
 
+static int ib_poll_dim_handler(struct irq_poll *iop, int budget)
+{
+	struct ib_cq *cq = container_of(iop, struct ib_cq, iop);
+	int completed;
+	struct dim *dim = &cq->dim;
+
+	completed = __ib_process_cq(cq, budget, cq->wc, IB_POLL_BATCH);
+	if (completed < budget) {
+		irq_poll_complete(&cq->iop);
+		if (ib_req_notify_cq(cq, IB_POLL_FLAGS) > 0)
+			irq_poll_sched(&cq->iop);
+	}
+
+	rdma_dim(dim, completed);
+
+	return completed;
+}
+
 static void ib_cq_completion_softirq(struct ib_cq *cq, void *private)
 {
 	irq_poll_sched(&cq->iop);
@@ -105,14 +150,18 @@ static void ib_cq_completion_softirq(struct ib_cq *cq, void *private)
 
 static void ib_cq_poll_work(struct work_struct *work)
 {
-	struct ib_cq *cq = container_of(work, struct ib_cq, work);
+	struct ib_cq *cq = container_of(work, struct ib_cq,
+					work);
 	int completed;
 
 	completed = __ib_process_cq(cq, IB_POLL_BUDGET_WORKQUEUE, cq->wc,
 				    IB_POLL_BATCH);
+
 	if (completed >= IB_POLL_BUDGET_WORKQUEUE ||
 	    ib_req_notify_cq(cq, IB_POLL_FLAGS) > 0)
 		queue_work(cq->comp_wq, &cq->work);
+	else if (cq->dim_used)
+		rdma_dim(&cq->dim, completed);
 }
 
 static void ib_cq_completion_workqueue(struct ib_cq *cq, void *private)
@@ -129,6 +178,7 @@ static void ib_cq_completion_workqueue(struct ib_cq *cq, void *private)
  * @poll_ctx:		context to poll the CQ from.
  * @caller:		module owner name.
  * @udata:		Valid user data or NULL for kernel object
+ * @use_dim:		use dynamic interrupt moderation
  *
  * This is the proper interface to allocate a CQ for in-kernel users. A
  * CQ allocated with this interface will automatically be polled from the
@@ -138,7 +188,8 @@ static void ib_cq_completion_workqueue(struct ib_cq *cq, void *private)
 struct ib_cq *__ib_alloc_cq_user(struct ib_device *dev, void *private,
 				 int nr_cqe, int comp_vector,
 				 enum ib_poll_context poll_ctx,
-				 const char *caller, struct ib_udata *udata)
+				 const char *caller, struct ib_udata *udata,
+				 bool use_dim)
 {
 	struct ib_cq_init_attr cq_attr = {
 		.cqe		= nr_cqe,
@@ -173,13 +224,30 @@ struct ib_cq *__ib_alloc_cq_user(struct ib_device *dev, void *private,
 	case IB_POLL_SOFTIRQ:
 		cq->comp_handler = ib_cq_completion_softirq;
 
-		irq_poll_init(&cq->iop, IB_POLL_BUDGET_IRQ, ib_poll_handler);
+		if (use_dim)
+			cq->dim_used = rdma_dim_init(&cq->dim, cq);
+
+		if (cq->dim_used) {
+			irq_poll_init(&cq->iop, IB_POLL_BUDGET_IRQ,
+				      ib_poll_dim_handler);
+			INIT_WORK(&cq->dim.work, ib_cq_rdma_dim_work);
+		} else {
+			irq_poll_init(&cq->iop, IB_POLL_BUDGET_IRQ,
+				      ib_poll_handler);
+		}
+
 		ib_req_notify_cq(cq, IB_CQ_NEXT_COMP);
 		break;
 	case IB_POLL_WORKQUEUE:
 	case IB_POLL_UNBOUND_WORKQUEUE:
 		cq->comp_handler = ib_cq_completion_workqueue;
 		INIT_WORK(&cq->work, ib_cq_poll_work);
+		if (use_dim)
+			cq->dim_used = rdma_dim_init(&cq->dim, cq);
+
+		if (cq->dim_used)
+			INIT_WORK(&cq->dim.work, ib_cq_rdma_dim_work);
+
 		ib_req_notify_cq(cq, IB_CQ_NEXT_COMP);
 		cq->comp_wq = (cq->poll_ctx == IB_POLL_WORKQUEUE) ?
 				ib_comp_wq : ib_comp_unbound_wq;
@@ -217,10 +285,14 @@ void ib_free_cq_user(struct ib_cq *cq, struct ib_udata *udata)
 		break;
 	case IB_POLL_SOFTIRQ:
 		irq_poll_disable(&cq->iop);
+		if (cq->dim_used)
+			cancel_work_sync(&cq->dim.work);
 		break;
 	case IB_POLL_WORKQUEUE:
 	case IB_POLL_UNBOUND_WORKQUEUE:
 		cancel_work_sync(&cq->work);
+		if (cq->dim_used)
+			cancel_work_sync(&cq->dim.work);
 		break;
 	default:
 		WARN_ON_ONCE(1);
