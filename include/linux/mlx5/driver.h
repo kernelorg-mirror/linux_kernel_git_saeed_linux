@@ -452,6 +452,7 @@ struct mlx5_core_health {
 	/* protect info buf access */
 	struct mutex			info_buf_lock;
 	struct devlink_health_reporter *fw_reporter;
+	struct devlink_health_reporter *fw_fatal_reporter;
 };
 
 struct mlx5_qp_table {
