@@ -56,6 +56,7 @@
 #include "fs_core.h"
 #include "lib/mpfs.h"
 #include "eswitch.h"
+#include "devlink.h"
 #include "lib/mlx5.h"
 #include "fpga/core.h"
 #include "fpga/ipsec.h"
@@ -1312,7 +1313,7 @@ static int init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	request_module_nowait(MLX5_IB_MOD);
 
-	err = devlink_register(devlink, &pdev->dev);
+	err = mlx5_devlink_register(devlink, &pdev->dev);
 	if (err)
 		goto clean_load;
 
@@ -1337,7 +1338,7 @@ static void remove_one(struct pci_dev *pdev)
 	struct mlx5_core_dev *dev  = pci_get_drvdata(pdev);
 	struct devlink *devlink = priv_to_devlink(dev);
 
-	devlink_unregister(devlink);
+	mlx5_devlink_unregister(devlink);
 	mlx5_unregister_device(dev);
 
 	if (mlx5_unload_one(dev, true)) {
