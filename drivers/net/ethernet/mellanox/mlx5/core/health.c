@@ -357,7 +357,28 @@ static const char *hsynd_str(u8 synd)
 	}
 }
 
-static void print_health_info(struct mlx5_core_dev *dev)
+#define HEALTH_INFO_MAX_BUFF 1024
+static void mlx5_health_info_buf_reset(struct mlx5_core_dev *dev)
+{
+	dev->priv.health.info_buf_len = 0;
+}
+
+static void
+mlx5_health_info_buf_write(struct mlx5_core_dev *dev, const char *fmt, ...)
+{
+	struct mlx5_core_health *health = &dev->priv.health;
+	va_list args;
+	int len;
+
+	va_start(args, fmt);
+	len = vsnprintf(health->info_buf + health->info_buf_len,
+			HEALTH_INFO_MAX_BUFF - health->info_buf_len, fmt, args);
+	va_end(args);
+	health->info_buf_len = min_t(int, health->info_buf_len + len,
+				     HEALTH_INFO_MAX_BUFF);
+}
+
+static void mlx5_get_health_info(struct mlx5_core_dev *dev, u8 *synd)
 {
 	struct mlx5_core_health *health = &dev->priv.health;
 	struct health_buffer __iomem *h = health->health;
@@ -365,27 +386,46 @@ static void print_health_info(struct mlx5_core_dev *dev)
 	u32 fw;
 	int i;
 
+	*synd = ioread8(&h->synd);
 	/* If the syndrome is 0, the device is OK and no need to print buffer */
-	if (!ioread8(&h->synd))
+	if (!synd)
 		return;
 
+	mlx5_health_info_buf_reset(dev);
+	mlx5_health_info_buf_write(dev, "\n");
 	for (i = 0; i < ARRAY_SIZE(h->assert_var); i++)
-		mlx5_core_err(dev, "assert_var[%d] 0x%08x\n", i,
-			      ioread32be(h->assert_var + i));
+		mlx5_health_info_buf_write(dev, "assert_var[%d] 0x%08x\n", i,
+					   ioread32be(h->assert_var + i));
 
-	mlx5_core_err(dev, "assert_exit_ptr 0x%08x\n",
-		      ioread32be(&h->assert_exit_ptr));
-	mlx5_core_err(dev, "assert_callra 0x%08x\n",
-		      ioread32be(&h->assert_callra));
+	mlx5_health_info_buf_write(dev, "assert_exit_ptr 0x%08x\n",
+				   ioread32be(&h->assert_exit_ptr));
+	mlx5_health_info_buf_write(dev, "assert_callra 0x%08x\n",
+				   ioread32be(&h->assert_callra));
 	sprintf(fw_str, "%d.%d.%d", fw_rev_maj(dev), fw_rev_min(dev), fw_rev_sub(dev));
-	mlx5_core_err(dev, "fw_ver %s\n", fw_str);
-	mlx5_core_err(dev, "hw_id 0x%08x\n", ioread32be(&h->hw_id));
-	mlx5_core_err(dev, "irisc_index %d\n", ioread8(&h->irisc_index));
-	mlx5_core_err(dev, "synd 0x%x: %s\n", ioread8(&h->synd),
-		      hsynd_str(ioread8(&h->synd)));
-	mlx5_core_err(dev, "ext_synd 0x%04x\n", ioread16be(&h->ext_synd));
+	mlx5_health_info_buf_write(dev, "fw_ver %s\n", fw_str);
+	mlx5_health_info_buf_write(dev, "hw_id 0x%08x\n", ioread32be(&h->hw_id));
+	mlx5_health_info_buf_write(dev, "irisc_index %d\n", ioread8(&h->irisc_index));
+	mlx5_health_info_buf_write(dev, "synd 0x%x: %s\n", ioread8(&h->synd),
+				   hsynd_str(ioread8(&h->synd)));
+	mlx5_health_info_buf_write(dev, "ext_synd 0x%04x\n", ioread16be(&h->ext_synd));
 	fw = ioread32be(&h->fw_ver);
-	mlx5_core_err(dev, "raw fw_ver 0x%08x\n", fw);
+	mlx5_health_info_buf_write(dev, "raw fw_ver 0x%08x\n", fw);
+}
+
+static void mlx5_print_health_info(struct mlx5_core_dev *dev)
+{
+	struct mlx5_core_health *health = &dev->priv.health;
+	u8 synd;
+
+	mutex_lock(&health->info_buf_lock);
+	mlx5_get_health_info(dev, &synd);
+
+	if (!synd)
+		goto unlock;
+
+	mlx5_core_err(dev, "%s", health->info_buf);
+unlock:
+	mutex_unlock(&health->info_buf_lock);
 }
 
 static unsigned long get_next_poll_jiffies(void)
@@ -431,7 +471,7 @@ static void poll_health(struct timer_list *t)
 	health->prev = count;
 	if (health->miss_counter == MAX_MISSES) {
 		mlx5_core_err(dev, "device's health compromised - reached miss count\n");
-		print_health_info(dev);
+		mlx5_print_health_info(dev);
 	}
 
 	fatal_error = check_fatal_sensors(dev);
@@ -439,7 +479,7 @@ static void poll_health(struct timer_list *t)
 	if (fatal_error && !health->fatal_error) {
 		mlx5_core_err(dev, "Fatal error %u detected\n", fatal_error);
 		dev->priv.health.fatal_error = fatal_error;
-		print_health_info(dev);
+		mlx5_print_health_info(dev);
 		mlx5_trigger_health_work(dev);
 	}
 
@@ -497,6 +537,7 @@ void mlx5_health_cleanup(struct mlx5_core_dev *dev)
 {
 	struct mlx5_core_health *health = &dev->priv.health;
 
+	kfree(health->info_buf);
 	destroy_workqueue(health->wq);
 }
 
@@ -519,6 +560,14 @@ int mlx5_health_init(struct mlx5_core_dev *dev)
 	spin_lock_init(&health->wq_lock);
 	INIT_WORK(&health->work, health_care);
 	health->crdump = NULL;
+	health->info_buf = kmalloc(HEALTH_INFO_MAX_BUFF, GFP_KERNEL);
+	if (!health->info_buf)
+		goto err_alloc_buff;
+	mutex_init(&health->info_buf_lock);
 
 	return 0;
+
+err_alloc_buff:
+	destroy_workqueue(health->wq);
+	return -ENOMEM;
 }

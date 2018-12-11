@@ -444,6 +444,10 @@ struct mlx5_core_health {
 	struct work_struct		work;
 	struct delayed_work		recover_work;
 	struct mlx5_fw_crdump	       *crdump;
+	char			       *info_buf;
+	int				info_buf_len;
+	/* protect info buf access */
+	struct mutex			info_buf_lock;
 };
 
 struct mlx5_qp_table {
