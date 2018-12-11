@@ -428,6 +428,58 @@ unlock:
 	mutex_unlock(&health->info_buf_lock);
 }
 
+static int
+mlx5_fw_reporter_diagnose(struct devlink_health_reporter *reporter,
+			  struct devlink_fmsg *fmsg)
+{
+	struct mlx5_core_dev *dev = devlink_health_reporter_priv(reporter);
+	struct mlx5_core_health *health = &dev->priv.health;
+	u8 synd;
+	int err;
+
+	mutex_lock(&health->info_buf_lock);
+	mlx5_get_health_info(dev, &synd);
+
+	if (!synd) {
+		mutex_unlock(&health->info_buf_lock);
+		return devlink_fmsg_u8_pair_put(fmsg, "Syndrome", synd);
+	}
+
+	err = devlink_fmsg_string_pair_put(fmsg, "diagnose data",
+					   health->info_buf);
+
+	mutex_unlock(&health->info_buf_lock);
+	return err;
+}
+
+static const struct devlink_health_reporter_ops mlx5_fw_reporter_ops = {
+		.name = "fw",
+		.diagnose = mlx5_fw_reporter_diagnose,
+};
+
+static void mlx5_fw_reporter_create(struct mlx5_core_dev *dev)
+{
+	struct mlx5_core_health *health = &dev->priv.health;
+	struct devlink *devlink = priv_to_devlink(dev);
+
+	health->fw_reporter =
+		devlink_health_reporter_create(devlink, &mlx5_fw_reporter_ops,
+					       0, false, dev);
+	if (IS_ERR(health->fw_reporter))
+		mlx5_core_warn(dev, "Failed to create fw reporter, err = %ld\n",
+			       PTR_ERR(health->fw_reporter));
+}
+
+static void mlx5_fw_reporter_destroy(struct mlx5_core_dev *dev)
+{
+	struct mlx5_core_health *health = &dev->priv.health;
+
+	if (IS_ERR_OR_NULL(health->fw_reporter))
+		return;
+
+	devlink_health_reporter_destroy(health->fw_reporter);
+}
+
 static unsigned long get_next_poll_jiffies(void)
 {
 	unsigned long next;
@@ -539,6 +591,7 @@ void mlx5_health_cleanup(struct mlx5_core_dev *dev)
 
 	kfree(health->info_buf);
 	destroy_workqueue(health->wq);
+	mlx5_fw_reporter_destroy(dev);
 }
 
 int mlx5_health_init(struct mlx5_core_dev *dev)
@@ -564,6 +617,8 @@ int mlx5_health_init(struct mlx5_core_dev *dev)
 	if (!health->info_buf)
 		goto err_alloc_buff;
 	mutex_init(&health->info_buf_lock);
+
+	mlx5_fw_reporter_create(dev);
 
 	return 0;
 
