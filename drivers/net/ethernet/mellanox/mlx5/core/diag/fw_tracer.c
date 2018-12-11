@@ -243,6 +243,27 @@ free_strings_db:
 	return -ENOMEM;
 }
 
+static int
+mlx5_fw_tracer_allocate_saved_traces_buff(struct mlx5_fw_tracer *tracer)
+{
+	int traces_buff_size = SAVED_TRACES_BUFFER_SIZE_BYTE;
+
+	tracer->sbuff.traces_buff = kzalloc(traces_buff_size, GFP_KERNEL);
+	if (!tracer->sbuff.traces_buff)
+		return -ENOMEM;
+	tracer->sbuff.saved_traces_index = 0;
+	mutex_init(&tracer->sbuff.lock);
+
+	return 0;
+}
+
+static void
+mlx5_fw_tracer_free_saved_traces_buff(struct mlx5_fw_tracer *tracer)
+{
+	kfree(tracer->sbuff.traces_buff);
+	tracer->sbuff.traces_buff = NULL;
+}
+
 static void mlx5_tracer_read_strings_db(struct work_struct *work)
 {
 	struct mlx5_fw_tracer *tracer = container_of(work, struct mlx5_fw_tracer,
@@ -522,6 +543,24 @@ static void mlx5_fw_tracer_clean_ready_list(struct mlx5_fw_tracer *tracer)
 		list_del(&str_frmt->list);
 }
 
+static void mlx5_fw_tracer_save_trace(struct mlx5_fw_tracer *tracer,
+				      u64 timestamp, bool lost,
+				      u8 event_id, char *msg)
+{
+	char *saved_traces = tracer->sbuff.traces_buff;
+	u32 offset;
+
+	mutex_lock(&tracer->sbuff.lock);
+	offset = tracer->sbuff.saved_traces_index * TRACE_STR_LINE;
+	snprintf(saved_traces + offset, TRACE_STR_LINE,
+		 "%s [0x%llx] %d [0x%x] %s", dev_name(&tracer->dev->pdev->dev),
+		 timestamp, lost, event_id, msg);
+
+	tracer->sbuff.saved_traces_index =
+		(tracer->sbuff.saved_traces_index + 1) & (SAVED_TRACES_NUM - 1);
+	mutex_unlock(&tracer->sbuff.lock);
+}
+
 static void mlx5_tracer_print_trace(struct tracer_string_format *str_frmt,
 				    struct mlx5_core_dev *dev,
 				    u64 trace_timestamp)
@@ -539,6 +578,9 @@ static void mlx5_tracer_print_trace(struct tracer_string_format *str_frmt,
 
 	trace_mlx5_fw(dev->tracer, trace_timestamp, str_frmt->lost,
 		      str_frmt->event_id, tmp);
+
+	mlx5_fw_tracer_save_trace(dev->tracer, trace_timestamp,
+				  str_frmt->lost, str_frmt->event_id, tmp);
 
 	/* remove it from hash */
 	mlx5_tracer_clean_message(str_frmt);
@@ -820,6 +862,64 @@ int mlx5_fw_tracer_trigger_core_dump_general(struct mlx5_core_dev *dev)
 	return 0;
 }
 
+static int
+mlx5_devlink_fmsg_fill_trace(struct devlink_fmsg *fmsg,
+			     char *trace)
+{
+	int err;
+
+	err = devlink_fmsg_obj_nest_start(fmsg);
+	if (err)
+		return err;
+
+	err = devlink_fmsg_string_pair_put(fmsg, "trace", trace);
+	if (err)
+		return err;
+
+	err = devlink_fmsg_obj_nest_end(fmsg);
+	if (err)
+		return err;
+	return 0;
+}
+
+int mlx5_fw_tracer_get_saved_traces_objects(struct mlx5_fw_tracer *tracer,
+					    struct devlink_fmsg *fmsg)
+{
+	char *saved_traces = tracer->sbuff.traces_buff;
+	u32 index, start_index, end_index;
+	u32 saved_traces_index;
+	int err;
+
+	if (!saved_traces[0])
+		return -ENOMSG;
+
+	mutex_lock(&tracer->sbuff.lock);
+	saved_traces_index = tracer->sbuff.saved_traces_index;
+	if (saved_traces[saved_traces_index * TRACE_STR_LINE])
+		start_index = saved_traces_index;
+	else
+		start_index = 0;
+	end_index = (saved_traces_index - 1) & (SAVED_TRACES_NUM - 1);
+
+	err = devlink_fmsg_arr_pair_nest_start(fmsg, "dump traces");
+	if (err)
+		goto unlock;
+	index = start_index;
+	while (index != end_index) {
+		err = mlx5_devlink_fmsg_fill_trace(fmsg,
+						   saved_traces + index * TRACE_STR_LINE);
+		if (err)
+			goto unlock;
+
+		index = (index + 1) & (SAVED_TRACES_NUM - 1);
+	}
+
+	err = devlink_fmsg_arr_pair_nest_end(fmsg);
+unlock:
+	mutex_unlock(&tracer->sbuff.lock);
+	return err;
+}
+
 /* Create software resources (Buffers, etc ..) */
 struct mlx5_fw_tracer *mlx5_fw_tracer_create(struct mlx5_core_dev *dev)
 {
@@ -867,10 +967,18 @@ struct mlx5_fw_tracer *mlx5_fw_tracer_create(struct mlx5_core_dev *dev)
 		goto free_log_buf;
 	}
 
+	err = mlx5_fw_tracer_allocate_saved_traces_buff(tracer);
+	if (err) {
+		mlx5_core_warn(dev, "FWTracer: Create saved traces buffer failed %d\n", err);
+		goto free_strings_db;
+	}
+
 	mlx5_core_dbg(dev, "FWTracer: Tracer created\n");
 
 	return tracer;
 
+free_strings_db:
+	mlx5_fw_tracer_free_strings_db(tracer);
 free_log_buf:
 	mlx5_fw_tracer_destroy_log_buf(tracer);
 destroy_workqueue:
@@ -951,6 +1059,7 @@ void mlx5_fw_tracer_destroy(struct mlx5_fw_tracer *tracer)
 	cancel_work_sync(&tracer->read_fw_strings_work);
 	mlx5_fw_tracer_clean_ready_list(tracer);
 	mlx5_fw_tracer_clean_print_hash(tracer);
+	mlx5_fw_tracer_free_saved_traces_buff(tracer);
 	mlx5_fw_tracer_free_strings_db(tracer);
 	mlx5_fw_tracer_destroy_log_buf(tracer);
 	flush_workqueue(tracer->work_queue);

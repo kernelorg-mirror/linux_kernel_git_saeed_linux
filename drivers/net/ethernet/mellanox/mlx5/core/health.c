@@ -41,6 +41,7 @@
 #include "lib/eq.h"
 #include "lib/mlx5.h"
 #include "lib/pci_vsc.h"
+#include "diag/fw_tracer.h"
 
 enum {
 	MLX5_HEALTH_POLL_INTERVAL	= 2 * HZ,
@@ -452,9 +453,54 @@ mlx5_fw_reporter_diagnose(struct devlink_health_reporter *reporter,
 	return err;
 }
 
+struct mlx5_fw_reporter_ctx {
+	u8 err_synd;
+	int miss_counter;
+};
+
+static int
+mlx5_fw_reporter_ctx_pairs_put(struct devlink_fmsg *fmsg,
+			       struct mlx5_fw_reporter_ctx *fw_reporter_ctx)
+{
+	int err;
+
+	err = devlink_fmsg_u8_pair_put(fmsg, "Syndrome",
+				       fw_reporter_ctx->err_synd);
+	if (err)
+		return err;
+	err = devlink_fmsg_u32_pair_put(fmsg, "fw_miss_counter",
+					fw_reporter_ctx->miss_counter);
+	if (err)
+		return err;
+	return 0;
+}
+
+static int
+mlx5_fw_reporter_dump(struct devlink_health_reporter *reporter,
+		      struct devlink_fmsg *fmsg, void *priv_ctx)
+{
+	struct mlx5_core_dev *dev = devlink_health_reporter_priv(reporter);
+	int err;
+
+	err = mlx5_fw_tracer_trigger_core_dump_general(dev);
+	if (err)
+		return err;
+
+	if (priv_ctx) {
+		struct mlx5_fw_reporter_ctx *fw_reporter_ctx = priv_ctx;
+
+		err = mlx5_fw_reporter_ctx_pairs_put(fmsg, fw_reporter_ctx);
+		if (err)
+			return err;
+	}
+
+	return mlx5_fw_tracer_get_saved_traces_objects(dev->tracer, fmsg);
+}
+
 static const struct devlink_health_reporter_ops mlx5_fw_reporter_ops = {
 		.name = "fw",
 		.diagnose = mlx5_fw_reporter_diagnose,
+		.dump = mlx5_fw_reporter_dump,
 };
 
 static void mlx5_fw_reporter_create(struct mlx5_core_dev *dev)
