@@ -547,9 +547,48 @@ mlx5_fw_fatal_reporter_recover(struct devlink_health_reporter *reporter,
 	return mlx5_health_care(dev);
 }
 
+static int
+mlx5_fw_fatal_reporter_dump(struct devlink_health_reporter *reporter,
+			    struct devlink_fmsg *fmsg, void *priv_ctx)
+{
+	struct mlx5_core_dev *dev = devlink_health_reporter_priv(reporter);
+	char crdump_region[20];
+	u32 snapshot_id;
+	int err;
+
+	if (!mlx5_core_is_pf(dev)) {
+		mlx5_core_err(dev, "Only PF is permitted run FW fatal dump\n");
+		return -EPERM;
+	}
+
+	err = mlx5_crdump_collect(dev, crdump_region, &snapshot_id);
+	if (err)
+		return err;
+
+	if (priv_ctx) {
+		struct mlx5_fw_reporter_ctx *fw_reporter_ctx = priv_ctx;
+
+		err = mlx5_fw_reporter_ctx_pairs_put(fmsg, fw_reporter_ctx);
+		if (err)
+			return err;
+	}
+
+	err = devlink_fmsg_string_pair_put(fmsg, "devlink_region_name",
+					   crdump_region);
+	if (err)
+		return err;
+
+	err = devlink_fmsg_u32_pair_put(fmsg, "snapshot_id", snapshot_id);
+	if (err)
+		return err;
+
+	return 0;
+}
+
 static const struct devlink_health_reporter_ops mlx5_fw_fatal_reporter_ops = {
 		.name = "fw_fatal",
 		.recover = mlx5_fw_fatal_reporter_recover,
+		.dump = mlx5_fw_fatal_reporter_dump,
 };
 
 #define MLX5_REPORTER_FW_GRACEFUL_PERIOD 1200000
