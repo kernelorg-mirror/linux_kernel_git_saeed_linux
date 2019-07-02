@@ -56,6 +56,7 @@
 #include "en/monitor_stats.h"
 #include "en/reporter.h"
 #include "en/params.h"
+#include "en/txrx.h"
 
 struct mlx5e_rq_param {
 	u32			rqc[MLX5_ST_SZ_DW(rqc)];
