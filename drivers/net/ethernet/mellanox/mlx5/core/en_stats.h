@@ -121,6 +121,15 @@ struct mlx5e_sw_stats {
 #ifdef CONFIG_MLX5_EN_TLS
 	u64 tx_tls_ooo;
 	u64 tx_tls_resync_bytes;
+
+	u64 tx_ktls_ooo;
+	u64 tx_ktls_ooo_drop_no_sync_data;
+	u64 tx_ktls_ooo_drop_bypass_req;
+	u64 tx_ktls_ooo_dump_bytes;
+	u64 tx_ktls_ooo_dump_packets;
+	u64 tx_ktls_enc_packets;
+	u64 tx_ktls_enc_bytes;
+	u64 tx_ktls_ctx;
 #endif
 };
 
@@ -229,6 +238,15 @@ struct mlx5e_sq_stats {
 #ifdef CONFIG_MLX5_EN_TLS
 	u64 tls_ooo;
 	u64 tls_resync_bytes;
+
+	u64 ktls_ooo;
+	u64 ktls_ooo_drop_no_sync_data;
+	u64 ktls_ooo_drop_bypass_req;
+	u64 ktls_ooo_dump_bytes;
+	u64 ktls_ooo_dump_packets;
+	u64 ktls_enc_packets;
+	u64 ktls_enc_bytes;
+	u64 ktls_ctx;
 #endif
 	/* less likely accessed in data path */
 	u64 csum_none;
