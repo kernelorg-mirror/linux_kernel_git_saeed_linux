@@ -1020,6 +1020,8 @@ void mlx5e_close_icosq(struct mlx5e_icosq *sq);
 int mlx5e_open_xdpsq(struct mlx5e_channel *c, struct mlx5e_params *params,
 		     struct mlx5e_sq_param *param, struct xsk_buff_pool *xsk_pool,
 		     struct mlx5e_xdpsq *sq, bool is_redirect);
+void mlx5e_activate_xdpsq(struct mlx5e_xdpsq *sq);
+void mlx5e_deactivate_xdpsq(struct mlx5e_xdpsq *sq);
 void mlx5e_close_xdpsq(struct mlx5e_xdpsq *sq);
 
 struct mlx5e_create_cq_param {

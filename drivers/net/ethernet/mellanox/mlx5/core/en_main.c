@@ -1647,7 +1647,6 @@ int mlx5e_open_xdpsq(struct mlx5e_channel *c, struct mlx5e_params *params,
 	csp.cqn             = sq->cq.mcq.cqn;
 	csp.wq_ctrl         = &sq->wq_ctrl;
 	csp.min_inline_mode = sq->min_inline_mode;
-	set_bit(MLX5E_SQ_STATE_ENABLED, &sq->state);
 	err = mlx5e_create_sq_rdy(c->mdev, param, &csp, 0, &sq->sqn);
 	if (err)
 		goto err_free_xdpsq;
@@ -1687,18 +1686,25 @@ int mlx5e_open_xdpsq(struct mlx5e_channel *c, struct mlx5e_params *params,
 	return 0;
 
 err_free_xdpsq:
-	clear_bit(MLX5E_SQ_STATE_ENABLED, &sq->state);
 	mlx5e_free_xdpsq(sq);
 
 	return err;
 }
 
+void mlx5e_activate_xdpsq(struct mlx5e_xdpsq *sq)
+{
+	set_bit(MLX5E_SQ_STATE_ENABLED, &sq->state);
+}
+
+void mlx5e_deactivate_xdpsq(struct mlx5e_xdpsq *sq)
+{
+	clear_bit(MLX5E_SQ_STATE_ENABLED, &sq->state);
+	synchronize_net(); /* Sync with NAPI. */
+}
+
 void mlx5e_close_xdpsq(struct mlx5e_xdpsq *sq)
 {
 	struct mlx5e_channel *c = sq->channel;
-
-	clear_bit(MLX5E_SQ_STATE_ENABLED, &sq->state);
-	synchronize_net(); /* Sync with NAPI. */
 
 	mlx5e_destroy_sq(c->mdev, sq->sqn);
 	mlx5e_free_xdpsq_descs(sq);
@@ -2249,7 +2255,10 @@ static void mlx5e_activate_channel(struct mlx5e_channel *c)
 		mlx5e_activate_txqsq(&c->sq[tc]);
 	mlx5e_activate_icosq(&c->icosq);
 	mlx5e_activate_icosq(&c->async_icosq);
+	if (c->xdp)
+		mlx5e_activate_xdpsq(&c->rq_xdpsq);
 	mlx5e_activate_rq(&c->rq);
+	mlx5e_activate_xdpsq(&c->xdpsq);
 
 	if (test_bit(MLX5E_CHANNEL_STATE_XSK, c->state))
 		mlx5e_activate_xsk(c);
@@ -2262,7 +2271,10 @@ static void mlx5e_deactivate_channel(struct mlx5e_channel *c)
 	if (test_bit(MLX5E_CHANNEL_STATE_XSK, c->state))
 		mlx5e_deactivate_xsk(c);
 
+	mlx5e_deactivate_xdpsq(&c->xdpsq);
 	mlx5e_deactivate_rq(&c->rq);
+	if (c->xdp)
+		mlx5e_deactivate_xdpsq(&c->rq_xdpsq);
 	mlx5e_deactivate_icosq(&c->async_icosq);
 	mlx5e_deactivate_icosq(&c->icosq);
 	for (tc = 0; tc < c->num_tc; tc++)
