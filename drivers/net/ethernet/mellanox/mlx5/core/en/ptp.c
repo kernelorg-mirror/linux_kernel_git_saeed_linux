@@ -724,11 +724,14 @@ void mlx5e_ptp_close(struct mlx5e_ptp *c)
 	kvfree(c);
 }
 
-void mlx5e_ptp_activate_channel(struct mlx5e_ptp *c)
+void mlx5e_ptp_enable_channel(struct mlx5e_ptp *c)
+{
+	napi_enable(&c->napi);
+}
+
+void mlx5e_ptp_start_channel(struct mlx5e_ptp *c)
 {
 	int tc;
-
-	napi_enable(&c->napi);
 
 	if (test_bit(MLX5E_PTP_STATE_TX, c->state)) {
 		for (tc = 0; tc < c->num_tc; tc++) {
@@ -742,22 +745,25 @@ void mlx5e_ptp_activate_channel(struct mlx5e_ptp *c)
 	}
 }
 
-void mlx5e_ptp_deactivate_channel(struct mlx5e_ptp *c)
+void mlx5e_ptp_disable_channel(struct mlx5e_ptp *c)
 {
 	int tc;
 
 	if (test_bit(MLX5E_PTP_STATE_RX, c->state))
 		mlx5e_deactivate_rq(&c->rq);
 
-	if (test_bit(MLX5E_PTP_STATE_TX, c->state)) {
-		for (tc = 0; tc < c->num_tc; tc++) {
+	if (test_bit(MLX5E_PTP_STATE_TX, c->state))
+		for (tc = 0; tc < c->num_tc; tc++)
 			mlx5e_disable_txqsq(&c->ptpsq[tc].txqsq);
+}
 
-			/* Sync with NAPI to prevent netif_tx_wake_queue. */
-			synchronize_net();
+void mlx5e_ptp_stop_channel(struct mlx5e_ptp *c)
+{
+	int tc;
+
+	if (test_bit(MLX5E_PTP_STATE_TX, c->state))
+		for (tc = 0; tc < c->num_tc; tc++)
 			mlx5e_stop_txqsq(&c->ptpsq[tc].txqsq);
-		}
-	}
 	napi_disable(&c->napi);
 }
 

@@ -2251,11 +2251,14 @@ err_napi_del:
 	return err;
 }
 
-static void mlx5e_activate_channel(struct mlx5e_channel *c)
+static void mlx5e_enable_channel(struct mlx5e_channel *c)
+{
+	napi_enable(&c->napi);
+}
+
+static void mlx5e_start_channel(struct mlx5e_channel *c)
 {
 	int tc;
-
-	napi_enable(&c->napi);
 
 	for (tc = 0; tc < c->num_tc; tc++) {
 		mlx5e_enable_txqsq(&c->sq[tc]);
@@ -2272,7 +2275,7 @@ static void mlx5e_activate_channel(struct mlx5e_channel *c)
 		mlx5e_activate_xsk(c);
 }
 
-static void mlx5e_deactivate_channel(struct mlx5e_channel *c)
+static void mlx5e_disable_channel(struct mlx5e_channel *c)
 {
 	int tc;
 
@@ -2285,15 +2288,17 @@ static void mlx5e_deactivate_channel(struct mlx5e_channel *c)
 		mlx5e_deactivate_xdpsq(&c->rq_xdpsq);
 	mlx5e_deactivate_icosq(&c->async_icosq);
 	mlx5e_deactivate_icosq(&c->icosq);
-	synchronize_net(); /* Sync with NAPI. */
-	for (tc = 0; tc < c->num_tc; tc++) {
+	for (tc = 0; tc < c->num_tc; tc++)
 		mlx5e_disable_txqsq(&c->sq[tc]);
-		/* Sync with NAPI to prevent netif_tx_wake_queue. */
-		synchronize_net();
-		mlx5e_stop_txqsq(&c->sq[tc]);
-	}
 	mlx5e_qos_deactivate_queues(c, false);
-	synchronize_net();
+}
+
+static void mlx5e_stop_channel(struct mlx5e_channel *c)
+{
+	int tc;
+
+	for (tc = 0; tc < c->num_tc; tc++)
+		mlx5e_stop_txqsq(&c->sq[tc]);
 	mlx5e_qos_deactivate_queues(c, true);
 	napi_disable(&c->napi);
 }
@@ -2371,11 +2376,15 @@ static void mlx5e_activate_channels(struct mlx5e_channels *chs)
 {
 	int i;
 
-	for (i = 0; i < chs->num; i++)
-		mlx5e_activate_channel(chs->c[i]);
+	for (i = 0; i < chs->num; i++) {
+		mlx5e_enable_channel(chs->c[i]);
+		mlx5e_start_channel(chs->c[i]);
+	}
 
-	if (chs->ptp)
-		mlx5e_ptp_activate_channel(chs->ptp);
+	if (chs->ptp) {
+		mlx5e_ptp_enable_channel(chs->ptp);
+		mlx5e_ptp_start_channel(chs->ptp);
+	}
 }
 
 #define MLX5E_RQ_WQES_TIMEOUT 20000 /* msecs */
@@ -2403,10 +2412,19 @@ static void mlx5e_deactivate_channels(struct mlx5e_channels *chs)
 	int i;
 
 	if (chs->ptp)
-		mlx5e_ptp_deactivate_channel(chs->ptp);
+		mlx5e_ptp_disable_channel(chs->ptp);
 
 	for (i = 0; i < chs->num; i++)
-		mlx5e_deactivate_channel(chs->c[i]);
+		mlx5e_disable_channel(chs->c[i]);
+
+	/* Sync with all NAPIs to wait until they stop using queues. */
+	synchronize_net();
+
+	if (chs->ptp)
+		mlx5e_ptp_stop_channel(chs->ptp);
+
+	for (i = 0; i < chs->num; i++)
+		mlx5e_stop_channel(chs->c[i]);
 }
 
 void mlx5e_close_channels(struct mlx5e_channels *chs)

@@ -70,8 +70,10 @@ static inline bool mlx5e_use_ptpsq(struct sk_buff *skb)
 int mlx5e_ptp_open(struct mlx5e_priv *priv, struct mlx5e_params *params,
 		   u8 lag_port, struct mlx5e_ptp **cp);
 void mlx5e_ptp_close(struct mlx5e_ptp *c);
-void mlx5e_ptp_activate_channel(struct mlx5e_ptp *c);
-void mlx5e_ptp_deactivate_channel(struct mlx5e_ptp *c);
+void mlx5e_ptp_enable_channel(struct mlx5e_ptp *c);
+void mlx5e_ptp_start_channel(struct mlx5e_ptp *c);
+void mlx5e_ptp_disable_channel(struct mlx5e_ptp *c);
+void mlx5e_ptp_stop_channel(struct mlx5e_ptp *c);
 int mlx5e_ptp_get_rqn(struct mlx5e_ptp *c, u32 *rqn);
 int mlx5e_ptp_alloc_rx_fs(struct mlx5e_priv *priv);
 void mlx5e_ptp_free_rx_fs(struct mlx5e_priv *priv);
