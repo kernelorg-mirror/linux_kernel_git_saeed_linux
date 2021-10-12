@@ -170,7 +170,13 @@ void mlx5e_close_xsk(struct mlx5e_channel *c)
 
 void mlx5e_activate_xsk(struct mlx5e_channel *c)
 {
+	/* ICOSQ recovery deactivates RQs. Use the mutex to avoid activating
+	 * XSKRQ in the middle of recovery.
+	 */
+	mutex_lock(&c->icosq_recovery_lock);
 	set_bit(MLX5E_RQ_STATE_ENABLED, &c->xskrq.state);
+	mutex_unlock(&c->icosq_recovery_lock);
+
 	/* TX queue is created active. */
 
 	spin_lock_bh(&c->async_icosq_lock);
@@ -180,6 +186,13 @@ void mlx5e_activate_xsk(struct mlx5e_channel *c)
 
 void mlx5e_deactivate_xsk(struct mlx5e_channel *c)
 {
-	mlx5e_deactivate_rq(&c->xskrq);
+	/* ICOSQ recovery may reactivate XSKRQ if clear_bit is called in the
+	 * middle of recovery. Use the mutex to avoid it.
+	 */
+	mutex_lock(&c->icosq_recovery_lock);
+	clear_bit(MLX5E_RQ_STATE_ENABLED, &c->xskrq.state);
+	mutex_unlock(&c->icosq_recovery_lock);
+	synchronize_net(); /* Sync with NAPI to prevent mlx5e_post_rx_wqes. */
+
 	/* TX queue is disabled on close. */
 }
