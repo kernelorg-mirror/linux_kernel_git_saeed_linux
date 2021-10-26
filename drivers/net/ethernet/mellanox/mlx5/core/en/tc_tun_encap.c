@@ -28,7 +28,7 @@ static int mlx5e_set_int_port_tunnel(struct mlx5e_priv *priv,
 
 	err = mlx5e_set_fwd_to_int_port_actions(priv, attr, e->route_dev_ifindex,
 						MLX5E_TC_INT_PORT_EGRESS,
-						&attr->action, out_index);
+						out_index);
 
 out:
 	if (route_dev)

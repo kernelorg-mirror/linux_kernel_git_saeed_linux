@@ -285,7 +285,6 @@ int mlx5e_set_fwd_to_int_port_actions(struct mlx5e_priv *priv,
 				      struct mlx5_flow_attr *attr,
 				      int ifindex,
 				      enum mlx5e_tc_int_port_type type,
-				      u32 *action,
 				      int out_index);
 #else /* CONFIG_MLX5_CLS_ACT */
 static inline int  mlx5e_tc_nic_init(struct mlx5e_priv *priv) { return 0; }
