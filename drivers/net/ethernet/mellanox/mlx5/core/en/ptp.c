@@ -731,8 +731,10 @@ void mlx5e_ptp_activate_channel(struct mlx5e_ptp *c)
 	napi_enable(&c->napi);
 
 	if (test_bit(MLX5E_PTP_STATE_TX, c->state)) {
-		for (tc = 0; tc < c->num_tc; tc++)
-			mlx5e_activate_txqsq(&c->ptpsq[tc].txqsq);
+		for (tc = 0; tc < c->num_tc; tc++) {
+			mlx5e_enable_txqsq(&c->ptpsq[tc].txqsq);
+			mlx5e_start_txqsq(&c->ptpsq[tc].txqsq);
+		}
 	}
 	if (test_bit(MLX5E_PTP_STATE_RX, c->state)) {
 		mlx5e_ptp_rx_set_fs(c->priv);
@@ -748,10 +750,14 @@ void mlx5e_ptp_deactivate_channel(struct mlx5e_ptp *c)
 		mlx5e_deactivate_rq(&c->rq);
 
 	if (test_bit(MLX5E_PTP_STATE_TX, c->state)) {
-		for (tc = 0; tc < c->num_tc; tc++)
-			mlx5e_deactivate_txqsq(&c->ptpsq[tc].txqsq);
-	}
+		for (tc = 0; tc < c->num_tc; tc++) {
+			mlx5e_disable_txqsq(&c->ptpsq[tc].txqsq);
 
+			/* Sync with NAPI to prevent netif_tx_wake_queue. */
+			synchronize_net();
+			mlx5e_stop_txqsq(&c->ptpsq[tc].txqsq);
+		}
+	}
 	napi_disable(&c->napi);
 }
 

@@ -1081,7 +1081,6 @@ void mlx5e_activate_rq(struct mlx5e_rq *rq)
 void mlx5e_deactivate_rq(struct mlx5e_rq *rq)
 {
 	clear_bit(MLX5E_RQ_STATE_ENABLED, &rq->state);
-	synchronize_net(); /* Sync with NAPI to prevent mlx5e_post_rx_wqes. */
 }
 
 void mlx5e_close_rq(struct mlx5e_rq *rq)
@@ -1513,14 +1512,18 @@ err_free_txqsq:
 	return err;
 }
 
-void mlx5e_activate_txqsq(struct mlx5e_txqsq *sq)
+void mlx5e_enable_txqsq(struct mlx5e_txqsq *sq)
 {
 	sq->txq = netdev_get_tx_queue(sq->netdev, sq->txq_ix);
 	set_bit(MLX5E_SQ_STATE_ENABLED, &sq->state);
+}
+
+void mlx5e_start_txqsq(struct mlx5e_txqsq *sq)
+{
+	sq->txq = netdev_get_tx_queue(sq->netdev, sq->txq_ix);
 	netdev_tx_reset_queue(sq->txq);
 	netif_tx_start_queue(sq->txq);
 }
-
 void mlx5e_tx_disable_queue(struct netdev_queue *txq)
 {
 	__netif_tx_lock_bh(txq);
@@ -1528,13 +1531,18 @@ void mlx5e_tx_disable_queue(struct netdev_queue *txq)
 	__netif_tx_unlock_bh(txq);
 }
 
-void mlx5e_deactivate_txqsq(struct mlx5e_txqsq *sq)
+void mlx5e_disable_txqsq(struct mlx5e_txqsq *sq)
+{
+	clear_bit(MLX5E_SQ_STATE_ENABLED, &sq->state);
+}
+
+void mlx5e_stop_txqsq(struct mlx5e_txqsq *sq)
 {
 	struct mlx5_wq_cyc *wq = &sq->wq;
 
-	clear_bit(MLX5E_SQ_STATE_ENABLED, &sq->state);
-	synchronize_net(); /* Sync with NAPI to prevent netif_tx_wake_queue. */
-
+	/* The SQ must be deactivated, and synchronize_rcu must be called before
+	 * this function to prevent netif_tx_wake_queue from reenabling the SQ.
+	 */
 	mlx5e_tx_disable_queue(sq->txq);
 
 	/* last doorbell out, godspeed .. */
@@ -1617,7 +1625,6 @@ void mlx5e_activate_icosq(struct mlx5e_icosq *icosq)
 void mlx5e_deactivate_icosq(struct mlx5e_icosq *icosq)
 {
 	clear_bit(MLX5E_SQ_STATE_ENABLED, &icosq->state);
-	synchronize_net(); /* Sync with NAPI. */
 }
 
 void mlx5e_close_icosq(struct mlx5e_icosq *sq)
@@ -1699,7 +1706,6 @@ void mlx5e_activate_xdpsq(struct mlx5e_xdpsq *sq)
 void mlx5e_deactivate_xdpsq(struct mlx5e_xdpsq *sq)
 {
 	clear_bit(MLX5E_SQ_STATE_ENABLED, &sq->state);
-	synchronize_net(); /* Sync with NAPI. */
 }
 
 void mlx5e_close_xdpsq(struct mlx5e_xdpsq *sq)
@@ -2251,8 +2257,10 @@ static void mlx5e_activate_channel(struct mlx5e_channel *c)
 
 	napi_enable(&c->napi);
 
-	for (tc = 0; tc < c->num_tc; tc++)
-		mlx5e_activate_txqsq(&c->sq[tc]);
+	for (tc = 0; tc < c->num_tc; tc++) {
+		mlx5e_enable_txqsq(&c->sq[tc]);
+		mlx5e_start_txqsq(&c->sq[tc]);
+	}
 	mlx5e_activate_icosq(&c->icosq);
 	mlx5e_activate_icosq(&c->async_icosq);
 	if (c->xdp)
@@ -2277,10 +2285,16 @@ static void mlx5e_deactivate_channel(struct mlx5e_channel *c)
 		mlx5e_deactivate_xdpsq(&c->rq_xdpsq);
 	mlx5e_deactivate_icosq(&c->async_icosq);
 	mlx5e_deactivate_icosq(&c->icosq);
-	for (tc = 0; tc < c->num_tc; tc++)
-		mlx5e_deactivate_txqsq(&c->sq[tc]);
-	mlx5e_qos_deactivate_queues(c);
-
+	synchronize_net(); /* Sync with NAPI. */
+	for (tc = 0; tc < c->num_tc; tc++) {
+		mlx5e_disable_txqsq(&c->sq[tc]);
+		/* Sync with NAPI to prevent netif_tx_wake_queue. */
+		synchronize_net();
+		mlx5e_stop_txqsq(&c->sq[tc]);
+	}
+	mlx5e_qos_deactivate_queues(c, false);
+	synchronize_net();
+	mlx5e_qos_deactivate_queues(c, true);
 	napi_disable(&c->napi);
 }
 
