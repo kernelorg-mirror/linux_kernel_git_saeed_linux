@@ -23,7 +23,7 @@ struct mlx5e_txqsq *mlx5e_get_sq(struct mlx5e_priv *priv, int qid);
 /* SQ lifecycle */
 int mlx5e_qos_open_queues(struct mlx5e_priv *priv, struct mlx5e_channels *chs);
 void mlx5e_qos_activate_queues(struct mlx5e_priv *priv);
-void mlx5e_qos_deactivate_queues(struct mlx5e_channel *c);
+void mlx5e_qos_deactivate_queues(struct mlx5e_channel *c, bool finalize);
 void mlx5e_qos_close_queues(struct mlx5e_channel *c);
 
 /* HTB API */

@@ -284,7 +284,8 @@ static void mlx5e_activate_qos_sq(struct mlx5e_priv *priv, struct mlx5e_qos_node
 	smp_wmb();
 
 	qos_dbg(priv->mdev, "Activate QoS SQ qid %u\n", node->qid);
-	mlx5e_activate_txqsq(sq);
+	mlx5e_enable_txqsq(sq);
+	mlx5e_start_txqsq(sq);
 }
 
 static void mlx5e_deactivate_qos_sq(struct mlx5e_priv *priv, u16 qid)
@@ -296,8 +297,9 @@ static void mlx5e_deactivate_qos_sq(struct mlx5e_priv *priv, u16 qid)
 		return;
 
 	qos_dbg(priv->mdev, "Deactivate QoS SQ qid %u\n", qid);
-	mlx5e_deactivate_txqsq(sq);
-
+	mlx5e_disable_txqsq(sq);
+	synchronize_net();
+	mlx5e_stop_txqsq(sq);
 	/* The queue is disabled, no synchronization with datapath is needed. */
 	priv->txq2sq[mlx5e_qid_from_qos(&priv->channels, qid)] = NULL;
 }
@@ -431,7 +433,7 @@ void mlx5e_qos_activate_queues(struct mlx5e_priv *priv)
 	}
 }
 
-void mlx5e_qos_deactivate_queues(struct mlx5e_channel *c)
+void mlx5e_qos_deactivate_queues(struct mlx5e_channel *c, bool finalize)
 {
 	struct mlx5e_params *params = &c->priv->channels.params;
 	struct mlx5e_txqsq __rcu **qos_sqs;
@@ -448,12 +450,15 @@ void mlx5e_qos_deactivate_queues(struct mlx5e_channel *c)
 		sq = mlx5e_state_dereference(c->priv, qos_sqs[i]);
 		if (!sq) /* Handle the case when the SQ failed to open. */
 			continue;
-
-		qos_dbg(c->mdev, "Deactivate QoS SQ qid %u\n", qid);
-		mlx5e_deactivate_txqsq(sq);
-
-		/* The queue is disabled, no synchronization with datapath is needed. */
-		c->priv->txq2sq[mlx5e_qid_from_qos(&c->priv->channels, qid)] = NULL;
+		if (finalize) {
+			qos_dbg(c->mdev, "Finalize QoS SQ qid %u\n", qid);
+			mlx5e_stop_txqsq(sq);
+			/* The queue is disabled, no synchronization with datapath is needed. */
+			c->priv->txq2sq[mlx5e_qid_from_qos(&c->priv->channels, qid)] = NULL;
+		} else {
+			qos_dbg(c->mdev, "Deactivate QoS SQ qid %u\n", qid);
+			mlx5e_disable_txqsq(sq);
+		}
 	}
 }
 
@@ -462,7 +467,10 @@ static void mlx5e_qos_deactivate_all_queues(struct mlx5e_channels *chs)
 	int i;
 
 	for (i = 0; i < chs->num; i++)
-		mlx5e_qos_deactivate_queues(chs->c[i]);
+		mlx5e_qos_deactivate_queues(chs->c[i], false);
+	synchronize_net();
+	for (i = 0; i < chs->num; i++)
+		mlx5e_qos_deactivate_queues(chs->c[i], true);
 }
 
 /* HTB API */

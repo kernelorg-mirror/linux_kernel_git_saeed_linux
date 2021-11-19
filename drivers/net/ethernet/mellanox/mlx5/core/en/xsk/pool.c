@@ -130,6 +130,7 @@ static int mlx5e_xsk_enable_locked(struct mlx5e_priv *priv,
 
 err_deactivate:
 	mlx5e_deactivate_xsk(c);
+	synchronize_net(); /* Sync with NAPI. */
 	mlx5e_close_xsk(c);
 
 err_remove_pool:
@@ -171,6 +172,7 @@ static int mlx5e_xsk_disable_locked(struct mlx5e_priv *priv, u16 ix)
 	c = priv->channels.c[ix];
 	mlx5e_rx_res_xsk_deactivate(priv->rx_res, ix);
 	mlx5e_deactivate_xsk(c);
+	synchronize_net(); /* Sync with NAPI. */
 	mlx5e_close_xsk(c);
 
 remove_pool:
