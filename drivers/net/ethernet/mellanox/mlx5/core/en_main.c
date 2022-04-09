@@ -3135,6 +3135,7 @@ err_close_tises:
 
 static void mlx5e_cleanup_nic_tx(struct mlx5e_priv *priv)
 {
+	mlx5e_accel_cleanup_tx(priv);
 	mlx5e_destroy_tises(priv);
 }
 
@@ -5120,8 +5121,16 @@ static int mlx5e_init_nic_tx(struct mlx5e_priv *priv)
 		return err;
 	}
 
+	err = mlx5e_accel_init_tx(priv);
+	if (err)
+		goto err_destroy_tises;
+
 	mlx5e_dcbnl_initialize(priv);
 	return 0;
+
+err_destroy_tises:
+	mlx5e_destroy_tises(priv);
+	return err;
 }
 
 static void mlx5e_nic_enable(struct mlx5e_priv *priv)
