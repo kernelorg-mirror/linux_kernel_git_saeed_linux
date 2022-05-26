@@ -45,10 +45,6 @@
  */
 static DECLARE_RWSEM(device_offload_lock);
 
-static void tls_device_gc_task(struct work_struct *work);
-
-static DECLARE_WORK(tls_device_gc_work, tls_device_gc_task);
-static LIST_HEAD(tls_device_gc_list);
 static LIST_HEAD(tls_device_list);
 static LIST_HEAD(tls_device_down_list);
 static DEFINE_SPINLOCK(tls_device_lock);
@@ -67,29 +63,17 @@ static void tls_device_free_ctx(struct tls_context *ctx)
 	tls_ctx_free(NULL, ctx);
 }
 
-static void tls_device_gc_task(struct work_struct *work)
+static void tls_device_tx_del_task(struct work_struct *work)
 {
-	struct tls_context *ctx, *tmp;
-	unsigned long flags;
-	LIST_HEAD(gc_list);
+	struct destruct_work *destruct_work =
+		container_of(work, struct destruct_work, work);
+	struct tls_context *ctx = destruct_work->ctx;
+	struct net_device *netdev = ctx->netdev;
 
-	spin_lock_irqsave(&tls_device_lock, flags);
-	list_splice_init(&tls_device_gc_list, &gc_list);
-	spin_unlock_irqrestore(&tls_device_lock, flags);
-
-	list_for_each_entry_safe(ctx, tmp, &gc_list, list) {
-		struct net_device *netdev = ctx->netdev;
-
-		if (netdev && ctx->tx_conf == TLS_HW) {
-			netdev->tlsdev_ops->tls_dev_del(netdev, ctx,
-							TLS_OFFLOAD_CTX_DIR_TX);
-			dev_put(netdev);
-			ctx->netdev = NULL;
-		}
-
-		list_del(&ctx->list);
-		tls_device_free_ctx(ctx);
-	}
+	netdev->tlsdev_ops->tls_dev_del(netdev, ctx, TLS_OFFLOAD_CTX_DIR_TX);
+	dev_put(netdev);
+	ctx->netdev = NULL;
+	tls_device_free_ctx(ctx);
 }
 
 static void tls_device_queue_ctx_destruction(struct tls_context *ctx)
@@ -98,21 +82,17 @@ static void tls_device_queue_ctx_destruction(struct tls_context *ctx)
 	bool async_cleanup;
 
 	spin_lock_irqsave(&tls_device_lock, flags);
-	async_cleanup = ctx->netdev && ctx->tx_conf == TLS_HW;
-	if (async_cleanup) {
-		list_move_tail(&ctx->list, &tls_device_gc_list);
-
-		/* schedule_work inside the spinlock
-		 * to make sure tls_device_down waits for that work.
-		 */
-		schedule_work(&tls_device_gc_work);
-	} else {
-		list_del(&ctx->list);
-	}
+	list_del(&ctx->list); /* Remove from tls_device_list / tls_device_down_list */
 	spin_unlock_irqrestore(&tls_device_lock, flags);
 
-	if (!async_cleanup)
+	async_cleanup = ctx->netdev && ctx->tx_conf == TLS_HW;
+	if (async_cleanup) {
+		struct tls_offload_context_tx *offload_ctx = tls_offload_ctx_tx(ctx);
+
+		schedule_work(&offload_ctx->destruct_work.work);
+	} else {
 		tls_device_free_ctx(ctx);
+	}
 }
 
 /* We assume that the socket is already connected */
@@ -1149,6 +1129,9 @@ int tls_set_device_offload(struct sock *sk, struct tls_context *ctx)
 	start_marker_record->len = 0;
 	start_marker_record->num_frags = 0;
 
+	INIT_WORK(&offload_ctx->destruct_work.work, tls_device_tx_del_task);
+	offload_ctx->destruct_work.ctx = ctx;
+
 	INIT_LIST_HEAD(&offload_ctx->records_list);
 	list_add_tail(&start_marker_record->list, &offload_ctx->records_list);
 	spin_lock_init(&offload_ctx->lock);
@@ -1388,8 +1371,6 @@ static int tls_device_down(struct net_device *netdev)
 
 	up_write(&device_offload_lock);
 
-	flush_work(&tls_device_gc_work);
-
 	return NOTIFY_DONE;
 }
 
@@ -1435,6 +1416,5 @@ void __init tls_device_init(void)
 void __exit tls_device_cleanup(void)
 {
 	unregister_netdevice_notifier(&tls_dev_notifier);
-	flush_work(&tls_device_gc_work);
 	clean_acked_data_flush();
 }

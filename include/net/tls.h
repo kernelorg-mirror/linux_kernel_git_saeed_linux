@@ -163,6 +163,11 @@ struct tls_record_info {
 	skb_frag_t frags[MAX_SKB_FRAGS];
 };
 
+struct destruct_work {
+	struct work_struct work;
+	struct tls_context *ctx;
+};
+
 struct tls_offload_context_tx {
 	struct crypto_aead *aead_send;
 	spinlock_t lock;	/* protects records list */
@@ -174,6 +179,7 @@ struct tls_offload_context_tx {
 
 	struct scatterlist sg_tx_data[MAX_SKB_FRAGS];
 	void (*sk_destruct)(struct sock *sk);
+	struct destruct_work destruct_work;
 	u8 driver_state[] __aligned(8);
 	/* The TLS layer reserves room for driver specific state
 	 * Currently the belief is that there is not enough
