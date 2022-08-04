@@ -18,6 +18,11 @@ void mlx5_sf_hw_table_destroy(struct mlx5_core_dev *dev);
 int mlx5_sf_table_init(struct mlx5_core_dev *dev);
 void mlx5_sf_table_cleanup(struct mlx5_core_dev *dev);
 
+static inline bool mlx5_sf_table_external(const struct mlx5_core_dev *dev)
+{
+	return !MLX5_CAP_GEN(dev, eswitch_manager);
+}
+
 int mlx5_devlink_sf_port_new(struct devlink *devlink,
 			     const struct devlink_port_new_attrs *add_attr,
 			     struct netlink_ext_ack *extack,
@@ -58,6 +63,11 @@ static inline int mlx5_sf_table_init(struct mlx5_core_dev *dev)
 
 static inline void mlx5_sf_table_cleanup(struct mlx5_core_dev *dev)
 {
+}
+
+static inline bool mlx5_sf_table_external(const struct mlx5_core_dev *dev)
+{
+	return true;
 }
 
 #endif
