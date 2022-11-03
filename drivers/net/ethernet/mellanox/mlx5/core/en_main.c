@@ -2954,6 +2954,9 @@ static int mlx5e_switch_priv_channels(struct mlx5e_priv *priv,
 	netif_carrier_off(netdev);
 
 	mlx5e_deactivate_priv_channels(priv);
+	/* Once deactivated, new tx_timeout_work won't be initiated. */
+	if (current_work() != &priv->tx_timeout_work)
+		cancel_work_sync(&priv->tx_timeout_work);
 
 	old_chs = priv->channels;
 	priv->channels = *new_chs;
@@ -3106,6 +3109,7 @@ int mlx5e_close_locked(struct net_device *netdev)
 
 	netif_carrier_off(priv->netdev);
 	mlx5e_deactivate_priv_channels(priv);
+	cancel_work_sync(&priv->tx_timeout_work);
 	mlx5e_close_channels(&priv->channels);
 
 	return 0;
@@ -4657,7 +4661,6 @@ static void mlx5e_tx_timeout_work(struct work_struct *work)
 	int i;
 
 	rtnl_lock();
-	mutex_lock(&priv->state_lock);
 
 	if (!test_bit(MLX5E_STATE_OPENED, &priv->state))
 		goto unlock;
@@ -4676,7 +4679,6 @@ static void mlx5e_tx_timeout_work(struct work_struct *work)
 	}
 
 unlock:
-	mutex_unlock(&priv->state_lock);
 	rtnl_unlock();
 }
 
