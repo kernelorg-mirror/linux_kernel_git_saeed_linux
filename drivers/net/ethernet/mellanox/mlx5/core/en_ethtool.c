@@ -435,6 +435,7 @@ int mlx5e_ethtool_set_channels(struct mlx5e_priv *priv,
 	struct mlx5e_params *cur_params = &priv->channels.params;
 	unsigned int count = ch->combined_count;
 	struct mlx5e_params new_params;
+	bool rxfh_configured;
 	bool arfs_enabled;
 	int rss_cnt;
 	bool opened;
@@ -492,10 +493,25 @@ int mlx5e_ethtool_set_channels(struct mlx5e_priv *priv,
 	if (arfs_enabled)
 		mlx5e_arfs_disable(priv->fs);
 
+	/* Changing the channels number can affect the size of the RXFH indir table.
+	 * Therefore, if the RXFH was previously configured,
+	 * unconfigure it to ensure that the RXFH is reverted to a uniform table.
+	 */
+	rxfh_configured = netif_is_rxfh_configured(priv->netdev);
+	if (rxfh_configured)
+		priv->netdev->priv_flags &= ~IFF_RXFH_CONFIGURED;
+
 	/* Switch to new channels, set new parameters and close old ones */
 	err = mlx5e_safe_switch_params(priv, &new_params,
 				       mlx5e_num_channels_changed_ctx, NULL, true);
-
+	if (rxfh_configured) {
+		/* Revert the RXFH configured */
+		if (err)
+			priv->netdev->priv_flags |= IFF_RXFH_CONFIGURED;
+		else
+			netdev_warn(priv->netdev, "%s: RXFH table entries reverting to default\n",
+				    __func__);
+	}
 	if (arfs_enabled) {
 		int err2 = mlx5e_arfs_enable(priv->fs);
 
