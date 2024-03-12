@@ -174,6 +174,13 @@ static struct ctl_table kernel_io_uring_disabled_table[] = {
 };
 #endif
 
+static inline void io_submit_flush_completions(struct io_ring_ctx *ctx)
+{
+	if (!wq_list_empty(&ctx->submit_state.compl_reqs) ||
+	    ctx->submit_state.cqes_count || ctx->submit_state.cq_flush)
+		__io_submit_flush_completions(ctx);
+}
+
 static inline unsigned int __io_cqring_events(struct io_ring_ctx *ctx)
 {
 	return ctx->cached_cq_tail - READ_ONCE(ctx->rings->cq.head);
