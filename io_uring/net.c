@@ -73,6 +73,12 @@ struct io_sr_msg {
 	struct io_kiocb 		*notif;
 };
 
+struct io_recvzc {
+	struct file			*file;
+	unsigned			msg_flags;
+	u16				flags;
+};
+
 /*
  * Number of times we'll try and do receives if there's more data. If we
  * exceed this limit, then add us to the back of the queue and retry from
@@ -826,7 +832,7 @@ static inline bool io_recv_finish(struct io_kiocb *req, int *ret,
 	else
 		cflags = io_put_kbuf(req, issue_flags);
 
-	if (kmsg->msg.msg_inq > 0)
+	if (kmsg && kmsg->msg.msg_inq > 0)
 		cflags |= IORING_CQE_F_SOCK_NONEMPTY;
 
 	/* bundle with no more immediate buffers, we're done */
@@ -1181,9 +1187,8 @@ out_free:
 	return ret;
 }
 
-static __maybe_unused
-struct io_zc_rx_ifq *io_zc_verify_sock(struct io_kiocb *req,
-					struct socket *sock)
+static struct io_zc_rx_ifq *io_zc_verify_sock(struct io_kiocb *req,
+					      struct socket *sock)
 {
 	unsigned token = READ_ONCE(sock->zc_rx_idx);
 	unsigned ifq_idx = token >> IO_ZC_IFQ_IDX_OFFSET;
@@ -1198,6 +1203,85 @@ struct io_zc_rx_ifq *io_zc_verify_sock(struct io_kiocb *req,
 	if (ifq->sockets[sock_idx] != req->file)
 		return NULL;
 	return ifq;
+}
+
+int io_recvzc_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
+{
+	struct io_recvzc *zc = io_kiocb_to_cmd(req, struct io_recvzc);
+
+	/* non-iopoll defer_taskrun only */
+	if (!req->ctx->task_complete)
+		return -EINVAL;
+	if (unlikely(sqe->file_index || sqe->addr2))
+		return -EINVAL;
+	if (READ_ONCE(sqe->len) || READ_ONCE(sqe->addr3))
+		return -EINVAL;
+
+	zc->flags = READ_ONCE(sqe->ioprio);
+	zc->msg_flags = READ_ONCE(sqe->msg_flags);
+
+	if (zc->msg_flags)
+		return -EINVAL;
+	if (zc->flags & ~RECVMSG_FLAGS)
+		return -EINVAL;
+	if (zc->flags & IORING_RECV_MULTISHOT)
+		req->flags |= REQ_F_APOLL_MULTISHOT;
+#ifdef CONFIG_COMPAT
+	if (req->ctx->compat)
+		zc->msg_flags |= MSG_CMSG_COMPAT;
+#endif
+	return 0;
+}
+
+int io_recvzc(struct io_kiocb *req, unsigned int issue_flags)
+{
+	struct io_recvzc *zc = io_kiocb_to_cmd(req, struct io_recvzc);
+	struct io_zc_rx_ifq *ifq;
+	struct socket *sock;
+	int ret;
+
+	/*
+	 * We're posting CQEs deeper in the stack, and to avoid taking CQ locks
+	 * we serialise by having only the master thread modifying the CQ with
+	 * DEFER_TASkRUN checked earlier and forbidding executing it from io-wq.
+	 * That's similar to io_check_multishot() for multishot CQEs.
+	 */
+	if (issue_flags & IO_URING_F_IOWQ)
+		return -EAGAIN;
+	if (WARN_ON_ONCE(!(issue_flags & IO_URING_F_NONBLOCK)))
+		return -EAGAIN;
+	if (!(req->flags & REQ_F_POLLED) &&
+	    (zc->flags & IORING_RECVSEND_POLL_FIRST))
+		return -EAGAIN;
+
+	sock = sock_from_file(req->file);
+	if (unlikely(!sock))
+		return -ENOTSOCK;
+	ifq = io_zc_verify_sock(req, sock);
+	if (!ifq)
+		return -EINVAL;
+
+	ret = io_zc_rx_recv(req, ifq, sock, zc->msg_flags | MSG_DONTWAIT);
+	if (unlikely(ret <= 0)) {
+		if (ret == -EAGAIN) {
+			if (issue_flags & IO_URING_F_MULTISHOT)
+				return IOU_ISSUE_SKIP_COMPLETE;
+			return -EAGAIN;
+		}
+		if (ret == -ERESTARTSYS)
+			ret = -EINTR;
+
+		req_set_fail(req);
+		io_req_set_res(req, ret, 0);
+
+		if (issue_flags & IO_URING_F_MULTISHOT)
+			return IOU_STOP_MULTISHOT;
+		return IOU_OK;
+	}
+
+	if (issue_flags & IO_URING_F_MULTISHOT)
+		return IOU_ISSUE_SKIP_COMPLETE;
+	return -EAGAIN;
 }
 
 void io_send_zc_cleanup(struct io_kiocb *req)
