@@ -43,6 +43,7 @@
 #include <net/page_pool/types.h>
 #include <net/pkt_sched.h>
 #include <net/xdp_sock_drv.h>
+#include <linux/io_uring/net.h>
 #include "eswitch.h"
 #include "en.h"
 #include "en/dim.h"
@@ -949,6 +950,13 @@ static int mlx5e_alloc_rq(struct mlx5e_params *params,
 		pp_params.netdev    = rq->netdev;
 		pp_params.dma_dir   = rq->buff.map_dir;
 		pp_params.max_len   = PAGE_SIZE;
+
+		if (params->zcrx.enable && params->zcrx.qid == rq->ix) {
+			netdev_info(rq->netdev, "Using IOU ZC RX for RXQ %d\n", rq->ix);
+			rq->nrxq.mp_params.mp_priv = params->zcrx.iou_ifq;
+			rq->nrxq.mp_params.mp_ops = &io_uring_pp_zc_ops;
+			pp_params.queue = &rq->nrxq;
+		}
 
 		/* page_pool can be used even when there is no rq->xdp_prog,
 		 * given page_pool does not handle DMA mapping there is no
@@ -5091,6 +5099,48 @@ unlock:
 	return err;
 }
 
+static bool mlx5e_zc_rx_allowed(struct net_device *netdev, struct mlx5_core_dev *mdev)
+{
+	struct mlx5e_priv *priv = netdev_priv(netdev);
+
+	if (!MLX5_CAP_GEN(mdev, shampo) || !MLX5_CAP_SHAMPO(mdev, shampo_header_split)) {
+		netdev_warn(netdev, "Zero-copy RX is not supported on this device\n");
+		return false;
+	}
+
+	if (priv->channels.params.packet_merge.type != MLX5E_PACKET_MERGE_SHAMPO) {
+		netdev_warn(netdev, "can't setup zcrx when tcp-data-split is not set\n");
+		return false;
+	}
+
+	return true;
+}
+
+static int mlx5e_setup_zc_rx(struct net_device *netdev, u16 queue_id, void *ifq)
+{
+	struct mlx5e_priv *priv = netdev_priv(netdev);
+	struct mlx5e_params new_params;
+	int err = 0;
+
+	netdev_info(netdev, "Zero-copy RX setup queue id %d %p\n", queue_id, ifq);
+	mutex_lock(&priv->state_lock);
+	new_params = priv->channels.params;
+	new_params.zcrx.enable = ifq ? true : false;
+	new_params.zcrx.qid = queue_id;
+	new_params.zcrx.iou_ifq = ifq;
+
+	if (!mlx5e_zc_rx_allowed(netdev, priv->mdev)) {
+		err = -EOPNOTSUPP;
+		goto unlock;
+	}
+
+	err = mlx5e_safe_switch_params(priv, &new_params, NULL, NULL, true);
+
+unlock:
+	mutex_unlock(&priv->state_lock);
+	return err;
+}
+
 static int mlx5e_xdp(struct net_device *dev, struct netdev_bpf *xdp)
 {
 	switch (xdp->command) {
@@ -5099,6 +5149,8 @@ static int mlx5e_xdp(struct net_device *dev, struct netdev_bpf *xdp)
 	case XDP_SETUP_XSK_POOL:
 		return mlx5e_xsk_setup_pool(dev, xdp->xsk.pool,
 					    xdp->xsk.queue_id);
+	case XDP_SETUP_ZC_RX:
+		return mlx5e_setup_zc_rx(dev, xdp->zc_rx.queue_id, xdp->zc_rx.ifq);
 	default:
 		return -EINVAL;
 	}

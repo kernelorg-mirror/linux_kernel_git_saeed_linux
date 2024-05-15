@@ -42,6 +42,7 @@
 #include <net/udp.h>
 #include <net/tcp.h>
 #include <net/xdp_sock_drv.h>
+#include <linux/io_uring/net.h>
 #include "en.h"
 #include "en/txrx.h"
 #include "en_tc.h"
@@ -542,12 +543,25 @@ mlx5e_add_skb_frag(struct mlx5e_rq *rq, struct sk_buff *skb,
 	}
 }
 
+static void *mlx5e_get_page_address(struct page *page)
+{
+	netmem_ref netmem = page_to_netmem(page);
+	struct io_zc_rx_buf *buf;
+
+	if (!netmem_is_net_iov(netmem))
+		return page_address(page);
+
+	buf = container_of(netmem_to_net_iov(netmem),
+			   struct io_zc_rx_buf, niov);
+	return page_address(buf->page);
+}
+
 static inline void
 mlx5e_copy_skb_header(struct mlx5e_rq *rq, struct sk_buff *skb,
 		      struct page *page, dma_addr_t addr,
 		      int offset_from, int dma_offset, u32 headlen)
 {
-	const void *from = page_address(page) + offset_from;
+	const void *from = mlx5e_get_page_address(page) + offset_from;
 	/* Aligning len to sizeof(long) optimizes memcpy performance */
 	unsigned int len = ALIGN(headlen, sizeof(long));
 
@@ -1998,12 +2012,12 @@ mlx5e_skb_from_cqe_mpwrq_nonlinear(struct mlx5e_rq *rq, struct mlx5e_mpw_info *w
 
 	if (prog) {
 		/* area for bpf_xdp_[store|load]_bytes */
-		net_prefetchw(page_address(frag_page->page) + frag_offset);
+		net_prefetchw(mlx5e_get_page_address(frag_page->page) + frag_offset);
 		if (unlikely(mlx5e_page_alloc_fragmented(rq->page_pool, &wi->linear_page))) {
 			rq->stats->buff_alloc_err++;
 			return NULL;
 		}
-		va = page_address(wi->linear_page.page);
+		va = mlx5e_get_page_address(wi->linear_page.page);
 		net_prefetchw(va); /* xdp_frame data area */
 		linear_hr = XDP_PACKET_HEADROOM;
 		linear_data_len = 0;
@@ -2139,7 +2153,7 @@ mlx5e_skb_from_cqe_mpwrq_linear(struct mlx5e_rq *rq, struct mlx5e_mpw_info *wi,
 		return NULL;
 	}
 
-	va             = page_address(frag_page->page) + head_offset;
+	va             = mlx5e_get_page_address(frag_page->page) + head_offset;
 	data           = va + rx_headroom;
 	frag_size      = MLX5_SKB_FRAG_SZ(rx_headroom + cqe_bcnt);
 

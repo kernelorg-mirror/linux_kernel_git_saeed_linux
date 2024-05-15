@@ -48,6 +48,7 @@
 #include <net/udp_tunnel.h>
 #include <net/switchdev.h>
 #include <net/xdp.h>
+#include <net/netdev_rx_queue.h>
 #include <linux/dim.h>
 #include <linux/bits.h>
 #include "wq.h"
@@ -308,6 +309,11 @@ struct mlx5e_params {
 	int hard_mtu;
 	bool ptp_rx;
 	__be32 terminate_lkey_be;
+	struct {
+		bool enable;
+		u16 qid;
+		void *iou_ifq;
+	} zcrx;
 };
 
 static inline u8 mlx5e_get_dcb_num_tc(struct mlx5e_params *params)
@@ -705,6 +711,8 @@ struct mlx5e_rq {
 	unsigned int           hw_mtu;
 
 	struct dim            *dim; /* Dynamic Interrupt Moderation */
+
+	struct netdev_rx_queue  nrxq;
 
 	/* XDP */
 	struct bpf_prog __rcu *xdp_prog;
