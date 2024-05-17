@@ -5123,6 +5123,7 @@ static int mlx5e_setup_zc_rx(struct net_device *netdev, u16 queue_id, void *ifq)
 	int err = 0;
 
 	netdev_info(netdev, "Zero-copy RX setup queue id %d %p\n", queue_id, ifq);
+	rtnl_lock();
 	mutex_lock(&priv->state_lock);
 	new_params = priv->channels.params;
 	new_params.zcrx.enable = ifq ? true : false;
@@ -5138,6 +5139,7 @@ static int mlx5e_setup_zc_rx(struct net_device *netdev, u16 queue_id, void *ifq)
 
 unlock:
 	mutex_unlock(&priv->state_lock);
+	rtnl_unlock();
 	return err;
 }
 
