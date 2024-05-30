@@ -75,6 +75,7 @@
 #include "en/trap.h"
 #include "lib/devcom.h"
 #include "lib/sd.h"
+#include "en/zcrx.h"
 
 static bool mlx5e_hw_gro_supported(struct mlx5_core_dev *mdev)
 {
@@ -940,6 +941,7 @@ static int mlx5e_alloc_rq(struct mlx5e_params *params,
 	} else {
 		/* Create a page_pool and register it with rxq */
 		struct page_pool_params pp_params = { 0 };
+		void *iou_ifq;
 
 		pp_params.order     = 0;
 		pp_params.flags     = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV;
@@ -951,9 +953,10 @@ static int mlx5e_alloc_rq(struct mlx5e_params *params,
 		pp_params.dma_dir   = rq->buff.map_dir;
 		pp_params.max_len   = PAGE_SIZE;
 
-		if (params->zcrx.enable && params->zcrx.qid == rq->ix) {
-			netdev_info(rq->netdev, "Using IOU ZC RX for RXQ %d\n", rq->ix);
-			rq->nrxq.mp_params.mp_priv = params->zcrx.iou_ifq;
+		iou_ifq = mlx5e_zcrx_get_iou_ifq(rq->priv, rq->ix);
+		if (iou_ifq) {
+			netdev_info(rq->netdev, "Using IOU ZC RX for RXQ %d 0x%p\n", rq->ix, iou_ifq);
+			rq->nrxq.mp_params.mp_priv = iou_ifq;
 			rq->nrxq.mp_params.mp_ops = &io_uring_pp_zc_ops;
 			pp_params.queue = &rq->nrxq;
 		}
@@ -5129,16 +5132,17 @@ static int mlx5e_setup_zc_rx(struct net_device *netdev, u16 queue_id, void *ifq)
 	netdev_info(netdev, "Zero-copy RX setup queue id %d %p\n", queue_id, ifq);
 	rtnl_lock();
 	mutex_lock(&priv->state_lock);
-	new_params = priv->channels.params;
-	new_params.zcrx.enable = ifq ? true : false;
-	new_params.zcrx.qid = queue_id;
-	new_params.zcrx.iou_ifq = ifq;
 
 	if (!mlx5e_zc_rx_allowed(netdev, priv->mdev)) {
 		err = -EOPNOTSUPP;
 		goto unlock;
 	}
 
+	err = mlx5e_zcrx_set_ifq(priv, queue_id, ifq);
+	if (err)
+		goto unlock;
+
+	new_params = priv->channels.params; /* no change in params, ifq state just changed */
 	err = mlx5e_safe_switch_params(priv, &new_params, NULL, NULL, true);
 
 unlock:

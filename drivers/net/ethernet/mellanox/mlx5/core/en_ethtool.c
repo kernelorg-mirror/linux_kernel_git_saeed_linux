@@ -422,6 +422,8 @@ int mlx5e_ethtool_set_ringparam(struct mlx5e_priv *priv,
 	} else {
 		new_params.packet_merge.type = MLX5E_PACKET_MERGE_NONE;
 		new_params.packet_merge.shampo_hds_only = false;
+
+		netdev_info(priv->netdev, "%s: Disabling zero copy RX\n", __func__);
 	}
 
 	if (priv->channels.params.packet_merge.type != new_params.packet_merge.type) {
@@ -435,6 +437,13 @@ int mlx5e_ethtool_set_ringparam(struct mlx5e_priv *priv,
 		if (!MLX5E_GET_PFLAG(&priv->channels.params, MLX5E_PFLAG_RX_STRIDING_RQ)) {
 			err = -EINVAL;
 			netdev_warn(priv->netdev, "%s: Cannot enable packet merge/header split mode while RX striding RQ is disabled\n",
+				    __func__);
+			goto unlock;
+		}
+
+		if (mlx5e_zcrx_is_active(priv)) {
+			err = -EINVAL;
+			netdev_warn(priv->netdev, "%s: Cannot change packet merge/header split mode while zero copy RX is active\n",
 				    __func__);
 			goto unlock;
 		}

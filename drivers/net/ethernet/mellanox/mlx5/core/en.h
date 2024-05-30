@@ -62,6 +62,7 @@
 #include "en/rx_res.h"
 #include "en/selq.h"
 #include "lib/sd.h"
+#include "en/zcrx.h"
 
 extern const struct net_device_ops mlx5e_netdev_ops;
 struct page_pool;
@@ -309,11 +310,6 @@ struct mlx5e_params {
 	int hard_mtu;
 	bool ptp_rx;
 	__be32 terminate_lkey_be;
-	struct {
-		bool enable;
-		u16 qid;
-		void *iou_ifq;
-	} zcrx;
 };
 
 static inline u8 mlx5e_get_dcb_num_tc(struct mlx5e_params *params)
@@ -938,6 +934,7 @@ struct mlx5e_priv {
 	struct devlink_health_reporter *tx_reporter;
 	struct devlink_health_reporter *rx_reporter;
 	struct mlx5e_xsk           xsk;
+	struct mlx5e_zcrx         *zcrx;
 #if IS_ENABLED(CONFIG_PCI_HYPERV_INTERFACE)
 	struct mlx5e_hv_vhca_stats_agent stats_agent;
 #endif
