@@ -42,7 +42,7 @@ static int __io_queue_mgmt(struct net_device *dev, struct io_zc_rx_ifq *ifq,
 
 	ndo_bpf = dev->netdev_ops->ndo_bpf;
 	if (!ndo_bpf)
-		return -EINVAL;
+		return -EOPNOTSUPP;
 
 	cmd.command = XDP_SETUP_ZC_RX;
 	cmd.zc_rx.ifq = ifq;
@@ -221,18 +221,6 @@ static void io_shutdown_ifq(struct io_zc_rx_ifq *ifq)
 	}
 }
 
-static void io_zc_rx_ifq_free(struct io_zc_rx_ifq *ifq)
-{
-	io_shutdown_ifq(ifq);
-
-	if (ifq->pool)
-		io_zc_rx_free_pool(ifq->pool);
-	if (ifq->dev)
-		dev_put(ifq->dev);
-	io_free_rbuf_ring(ifq);
-	kfree(ifq);
-}
-
 int io_register_zc_rx_ifq(struct io_ring_ctx *ctx,
 			  struct io_uring_zc_rx_ifq_reg __user *arg)
 {
@@ -257,23 +245,24 @@ int io_register_zc_rx_ifq(struct io_ring_ctx *ctx,
 
 	ret = io_allocate_rbuf_ring(ifq, &reg);
 	if (ret)
-		goto err;
+		goto rbuf_ring_err;
 
-	ret = -ENODEV;
 	ifq->dev = dev_get_by_index(current->nsproxy->net_ns, reg.if_idx);
-	if (!ifq->dev)
-		goto err;
+	if (!ifq->dev) {
+		ret = -ENODEV;
+		goto dev_get_err;
+	}
 
 	ret = io_zc_rx_create_pool(ctx, ifq, reg.region_id);
 	if (ret)
-		goto err;
+		goto pool_err;
 
 	ifq->rq_entries = reg.rq_entries;
 	ifq->if_rxq_id = reg.if_rxq_id;
 
 	ret = io_open_zc_rxq(ifq);
 	if (ret)
-		goto err;
+		goto open_zc_rxq_err;
 
 	ring_sz = sizeof(struct io_uring);
 	rqes_sz = sizeof(struct io_uring_rbuf_rqe) * ifq->rq_entries;
@@ -284,13 +273,21 @@ int io_register_zc_rx_ifq(struct io_ring_ctx *ctx,
 
 	if (copy_to_user(arg, &reg, sizeof(reg))) {
 		ret = -EFAULT;
-		goto err;
+		goto copy_err;
 	}
 
 	ctx->ifq = ifq;
 	return 0;
-err:
-	io_zc_rx_ifq_free(ifq);
+copy_err:
+	io_close_zc_rxq(ifq);
+open_zc_rxq_err:
+	io_zc_rx_free_pool(ifq->pool);
+pool_err:
+	dev_put(ifq->dev);
+dev_get_err:
+	io_free_rbuf_ring(ifq);
+rbuf_ring_err:
+	kfree(ifq);
 	return ret;
 }
 
@@ -306,7 +303,14 @@ void io_unregister_zc_rx_ifqs(struct io_ring_ctx *ctx)
 	WARN_ON_ONCE(ifq->nr_sockets);
 
 	ctx->ifq = NULL;
-	io_zc_rx_ifq_free(ifq);
+	io_shutdown_ifq(ifq);
+
+	if (ifq->pool)
+		io_zc_rx_free_pool(ifq->pool);
+	if (ifq->dev)
+		dev_put(ifq->dev);
+	io_free_rbuf_ring(ifq);
+	kfree(ifq);
 }
 
 void io_shutdown_zc_rx_ifqs(struct io_ring_ctx *ctx)
